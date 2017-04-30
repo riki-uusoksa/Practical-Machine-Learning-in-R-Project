@@ -1,0 +1,161 @@
+---
+title: "Practical Machine Learning in R"
+author: "Riki Uusoksa"
+date: "30 April, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Background
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+Data
+
+The training data for this project are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test data are available here:
+
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+The data for this project come from this source: http://groupware.les.inf.puc-rio.br/har. If you use the document you create for this class for any purpose please cite them as they have been very generous in allowing their data to be used for this kind of assignment. 
+
+
+##Initial Setup
+
+Load the required libraries.
+
+```{r libraries}
+library(caret)
+library(klaR)
+library(rattle)
+library(randomForest)
+library(rpart)
+library(nnet)
+library(caTools)
+```
+
+Set seed.
+
+```{r seed}
+set.seed(69420)
+```
+
+Create directory and fetch the files.
+
+```{r files1}
+if (!dir.exists('data'))
+  dir.create('data')
+
+if (!file.exists('data/training.csv'))
+  download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv', 'data/training.csv')
+
+if (!file.exists('data/testing.csv'))
+  download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv', 'data/testing.csv')
+```
+
+Load the files.
+
+```{r files2}
+#Load the files
+training <- read.csv('data/training.csv', na.strings=c("NA","#DIV/0!",""))
+testing <- read.csv('data/testing.csv', na.strings=c("NA","#DIV/0!",""))
+dim(training) #19622 160
+dim(testing) #20 160
+```
+
+##Cleaning the dataset
+
+Remove data-gathering data (timestamps, usernames etc.), which have no effect on the 'classe' variable.
+
+```{r clean_dataset}
+train <- training[, -(1:6)]
+```
+
+Check for Near-Zero Variance within variables. Removal of predictors that have near-zero variance lessens the dimensionality greatly, with the caveat that it reduces SOME variance.
+
+```{r nzv}
+nzv <- nearZeroVar(train)
+train <- train[, -nzv]
+dim(train) #19622 119
+```
+
+Remove variables that have more than .5 missing values.
+
+```{r missing_values}
+mask <- sapply(colnames(train), function(x) sum(is.na(train[, x])) > .5*nrow(train))
+train <- train[, !mask]
+dim(train) #19622 54
+```
+
+Check for correlation between variables.
+
+```{r correlation}
+cor75 <- findCorrelation(cor(train[,1:53]), cutoff=.75)
+length(cor75) #21 variables
+```
+
+These will be the variables we use to train the models (of which the Principal Components will be formed)
+
+```{r pred_names}
+names(train)
+```
+
+From looking at the number of correlating variables, we can see that the models could benefit from Principal Component Analysis to further reduce dimensionality in the dataset.  
+
+```{r pca}
+preProcess(train, method='pca', thresh=.95)
+preProcess(train, method='pca', thresh=.99)
+```
+##Models and CV
+
+To reduce error rate on the testing set (avoiding overfitting), we set the training control to do a k-fold cross validation with k=5 on when training.
+
+```{r training1}
+ctrl <- trainControl(method='cv', number=5, verboseIter=FALSE, preProcOptions='pca', allowParallel=TRUE)
+```
+
+Train models with Random Forest (method='rf'), CART (method='rpart2'), Neural Net (method='nn'), Logit Boost (method='LogitBoost') and Support Vector Machine (Radial, method='svmRadial').
+
+```{r training2}
+rf <- train(classe~., data=train, method='rf', trControl=ctrl)
+cart <- train(classe~., data=train, method='rpart2', trControl=ctrl)
+nnet <- train(classe~., data=train, method='nnet', trControl=ctrl, verbose=FALSE)
+lBoost <- train(classe~., data=train, method='LogitBoost', trControl=ctrl)
+svmRad <- train(classe~., data=train, method='svmRadial', trControl=ctrl)
+```
+
+Compare the accuracy of different models on the training set.
+
+```{r compare}
+accuracy <- c(max(rf$results$Accuracy), max(cart$results$Accuracy), max(nnet$results$Accuracy), max(lBoost$results$Accuracy), max(svmRad$results$Accuracy))
+kappa <- c(max(rf$results$Kappa), max(cart$results$Kappa), max(nnet$results$Kappa), max(lBoost$results$Kappa), max(svmRad$results$Kappa))
+names <- c('Random Forest', 'CART', 'Neural Net', 'Logit Boost', 'SVM Rad.')
+results <- cbind(names, accuracy, kappa)
+
+knitr::kable(results)
+```
+
+We can see from the results that Random Forest is superior to other models, with Radial SVM and Logit Boost not too far behind. Due to the lack of classe in test set, and using the 5-fold cross validation, we are content with the in-sample error rate to estimate our OOS-error, although the Out of Sample -error will necessarily be at least a bit higher in reality.
+
+Let's make predictions on the test set to see what they would look like.
+
+```{r predict}
+predRF <- predict(rf, testing)
+predSVM <- predict(svmRad, testing)
+predLB <- predict(lBoost, testing)
+
+results <- cbind(as.character(predRF), as.character(predSVM), as.character(predLB))
+colnames(results) <- c('Random Forest', 'SVM', 'Logit Boost')
+
+knitr::kable(results)
+```
+
+## Conclusion
+
+The Logit Boost has failed to predict some of the classes. We will be using either Random Forest's or SVM's predictions, since they are 1:1 match. Random forest's accuracy rate is very good, with these two not too far behind, but training the SVM and Random Forest took quite some time with this dataset.
+
